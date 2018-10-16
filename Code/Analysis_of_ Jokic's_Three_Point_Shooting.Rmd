@@ -1,0 +1,650 @@
+---
+title: "Analysis of Jokic's Three Point Shooting"
+author: "Kyle Wurtz"
+date: "2018.10.10"
+output: 
+  html_notebook:
+    toc: true
+    code_folding: hide
+    theme: yeti
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Overview
+
+This file contains a brief analysis I did on Jokic's three point shooting throughout his first three seasons in an attempt to get a better idea of what to expect for the upcoming 2018-19 season. Jokic was a mediocre three point shooter in his first 2 seasons (shooting roughly 33% on a little over 2 attempts per 36 minutes). Last year, however, there was a lot of talk about how much work he put in on the offseason shooting threes and both his volume and accuracy exploded. He more than doubled his volume over the prior year, shooting over 4 attempts per 36 minutes, and his accuracy lept from 32.4% to 39.6%. As a Nuggets fan, I want to believe that he's now a 40% three point shooter and we can completely believe last year's performance. As a skeptic who's been burned by #NuggLife in the past, though, I wanted to turn to historical precedence and statistical techniques to either validate this leap in performance or reign in my unreasonable expectations.
+
+Last year, I performed a similar experient with Jamal Murray. He had the reputation of a great shooter, but had a lackluster rookie year and shot just 33.4% from three point range. I wanted to reconcile the discrepancy between his reputation and his performance, so I turned to the data and looked at his game-by-game trends as well as the performance of comparable players early in their careers. Through melding the data and some non-quantitative factors (such as the fact that he played his entire first season with two sports hernias), I predicted he'd shoot something "close to 38%". I'm kicking myself now that I didn't publish that post, as he ended up shooting 37.8%... So this year, I decided to not only perform my analysis on Jokic's shooting but also publish the results! Hopefully I don't embarrass myself... :)
+
+I'll analyze Jokic's three point shooting in two ways. The first will use a Bayesian expectation based on the Beta distribution, which will offer a robust estimation of Jokic's "true" three point shooting percentage. This technique is extremely useful in preventing overreactions when sample sizes are small, as it uses a relatively general starting point and deviates from there based on the magnitude *and volume* of the evidence. The second analysis technique will be a more back-of-the-envelope calculation that's based on players in the past that have had similar jumps in three point shooting. I'll simply check to what extent players regressed in the following season, if at all.
+
+One final note set of notes and caveats before getting into the meat of the post: 
+
+1. This is going to be a math-heavy post. If you're just looking for the results, feel free to skim over the portions where I ramble about methodology! 
+2. I performed this analysis in R and have stored all the code on my [GitHub](https://github.com/kylewurtz/Jokic_3pt_Bayes). Feel free to clone the work and play around with the code yourself! 
+3. Finally, huge thanks to [David Robinson](https://twitter.com/drob) and his excellent book "[Introduction to Empirical Bayes](http://varianceexplained.org/r/empirical-bayes-book/)", which made the Bayesian portion of this analysis laughably simple.
+
+## Setup
+
+```{r, message = FALSE, warning = FALSE}
+require(tidyverse)
+require(magrittr)
+require(feather)
+require(ggthemes)
+```
+
+```{r}
+location_of_project = "~/Dropbox/R/NBA Analysis/2018-19/Jokic_3pt_Bayes"
+location_of_input_data = file.path(location_of_project, "Data/Input")
+location_of_output_data = file.path(location_of_project, "Data/Output")
+```
+
+## Bayesian Analysis
+
+### Selection of Prior Distribution
+
+We'll start with the Bayesian analysis, which hinges largely on the selection of a "prior". Bayesian analyses are based on the idea of moving away from a common starting point as more and stronger evidence accumulates. The common starting point is what's known as a prior in Bayesin terminology. There are a lot of ways to select a prior, and from what I can tell there's a lot of disagreement about the "right" way to select a prior. In this case, I'll be using a pretty simple prior distribution that's based on the three point shooting throughout the careers of historical NBA players.
+
+That narrows down the landscape of potential priors, but we still have some selections to make. We could choose any of the following, for example:
+
+- Distribution of performance for all players over a given time period (throughout all of NBA history, last 5 years, etc.)
+- Distribution of performance for just bigs over a given time period
+- Distribution of performance for players who fit a similar mold as Jokic
+- And so on...
+
+I don't want to go down the rabbit hole of determining positions -- especially given how positionless basketball is these days -- so I'm not going to worry about bigs vs. wings vs. smalls. I'm also not going to try to filter to similar players since I'm not sure we really have any other players throughout NBA history that are that similar to Jokic. I'm also not convinced either of these would actually improve our estimates.
+
+I am, however, going to investigate what the appropriate time period is to use in establishing our prior distribution. Three point shooting has exploded in popularity in recent years, and I'd imagine the shooters today are much better on average than shooters in the 80s and 90s. It'd be counterproductive to use these shooters from earlier eras to estimate the accuracy of modern shooters. 
+
+To start, I'll take a look at the league-wide three point averages over the history of the league (excluding years prior to the introduction of the three point line, obviously).  *Note: The data for this portion of the analysis comes from [Basketball Reference](https://www.basketball-reference.com/leagues/NBA_stats.html).*
+
+```{r}
+bbref_league_avgs = read_csv(
+  file.path(location_of_input_data, "NBA_League_Averages.csv")
+)
+names(bbref_league_avgs) = gsub("%", "_perc", names(bbref_league_avgs))
+names(bbref_league_avgs) = gsub("/", "_per_", names(bbref_league_avgs))
+names(bbref_league_avgs)[names(bbref_league_avgs) == "3P"] = "three_pt_made"
+names(bbref_league_avgs)[names(bbref_league_avgs) == "3PA"] = "three_pt_att"
+names(bbref_league_avgs)[names(bbref_league_avgs) == "3P_perc"] = "three_pt_perc"
+bbref_league_avgs
+```
+
+```{r, message = FALSE, fig.width = 10}
+scale_perc <- function(x) {
+  paste0(format(100 * x), "%")
+}
+bbref_league_avgs %>% 
+  select(Season, three_pt_perc) %>% 
+  filter(!is.na(three_pt_perc)) %>% 
+  arrange(Season) %>% 
+  ggplot(., aes(x = Season, y = three_pt_perc, group = 1)) +
+  geom_line() + geom_smooth() +
+  theme_fivethirtyeight() +
+  theme(
+    axis.title = element_text(), 
+    axis.text = element_text(angle = 90, vjust = 0.5)
+  ) +
+  scale_y_continuous(labels = scale_perc) +
+  ylab("3PT%") +
+  ggtitle(
+    "League Average 3PT% by Season"
+  )
+```
+
+League-wide three point shooting accuracy has actually remained remarkably stable since the mid 1990s. Let's zoom in on this time period to ensure that there isn't a material trend that appears hidden because of the scale of the above graph.
+
+```{r, message = FALSE, fig.width = 10}
+bbref_league_avgs %>% 
+  select(Season, three_pt_perc) %>% 
+  filter(
+    !is.na(three_pt_perc),
+    as.numeric(str_sub(Season, 1, 4)) >= 1993
+  ) %>% 
+  arrange(Season) %>% 
+  ggplot(., aes(x = Season, y = three_pt_perc, group = 1)) +
+  geom_line() + geom_smooth() +
+  theme_fivethirtyeight() +
+  theme(
+    axis.title = element_text(), 
+    axis.text = element_text(angle = 90, vjust = 0.5)
+  ) +
+  scale_y_continuous(labels = scale_perc) +
+  ylab("3PT%") +
+  ggtitle(
+    "League Average 3PT% by Season (>= 1993)"
+  )
+```
+
+It appears that there might have been something of a level shift around the 2004-05 season. If using league-wide performance as a prior, we might want to use data from the 2004-05 season onwards.
+
+While we have this data, it might be interesting to also take a look at the three point attempts per 100 possessions:
+
+```{r, message = FALSE, fig.width = 10}
+bbref_league_avgs %>% 
+  select(Season, Pace, three_pt_att, three_pt_perc) %>% 
+  filter(
+    !is.na(three_pt_perc),
+    as.numeric(str_sub(Season, 1, 4)) >= 1993
+  ) %>% 
+  mutate(
+    three_pt_att_per100 = three_pt_att / Pace
+  ) %>% 
+  arrange(Season) %>% 
+  select(Season, three_pt_perc, three_pt_att_per100) %>% 
+  gather(key, value, -Season) %>% 
+  mutate(
+    key = factor(key, levels = c("three_pt_perc", "three_pt_att_per100"), labels = c("Accuracy", "Attempts Per Possession"))
+  ) %>% 
+  ggplot(., aes(x = Season, y = value, group = key, color = key)) +
+  geom_line() + geom_smooth() +
+  theme_fivethirtyeight() +
+  theme(
+    axis.title = element_text(), 
+    axis.text = element_text(angle = 90, vjust = 0.5)
+  ) +
+  scale_y_continuous(labels = scale_perc) +
+  scale_color_fivethirtyeight(
+    "Three Point Shooting"
+  ) +
+  ylab("") +
+  ggtitle(
+    "League Average 3PT Shooting by Season (>= 1993)"
+  )
+```
+
+While the shooting accuracy has remained relatively stable around the 35-36% mark since the mid-90s, the volume of three point shots has increased dramatically and shows no signs of slowing down.
+
+### Establish a Prior Distribution
+
+Now that we have the time period established for our prior distribution, we can move onto fitting it! To do this, we'll need the three point shooting performance of all players throughout the NBA in each season since 2004. We can get this data from [Kaggle](https://www.kaggle.com/drgilermo/nba-players-stats/version/2#Seasons_Stats.csv), though it doesn't contain data from the most recent season. That should be fine for the purposes of establishing a prior.
+
+```{r}
+seasons_stats = read_csv(
+  file.path(location_of_input_data, "Seasons_Stats.csv")
+)
+names(seasons_stats) = gsub("%", "_perc", names(seasons_stats))
+names(seasons_stats) = gsub("/", "_per_", names(seasons_stats))
+names(seasons_stats)[names(seasons_stats) == "3P"] = "three_pt_made"
+names(seasons_stats)[names(seasons_stats) == "3PA"] = "three_pt_att"
+names(seasons_stats)[names(seasons_stats) == "3P_perc"] = "three_pt_perc"
+names(seasons_stats)[names(seasons_stats) == "3PAr"] = "three_pt_att_rate"
+seasons_stats %<>%
+  mutate(
+    three_pt_made = as.numeric(three_pt_made),
+    three_pt_att = as.numeric(three_pt_att),
+    three_pt_perc = as.numeric(three_pt_perc),
+    three_pt_perc = as.numeric(three_pt_att_rate)
+  )
+seasons_stats
+```
+
+```{r}
+seasons_stats_3pt = seasons_stats %>% 
+  filter(Tm != "TOT") %>% 
+  group_by(Player, Year) %>% 
+  summarize(
+    three_pt_made = sum(three_pt_made),
+    three_pt_att = sum(three_pt_att)
+  ) %>% 
+  mutate(three_pt_perc = three_pt_made / three_pt_att)
+seasons_stats_3pt
+```
+
+```{r}
+prior_df = seasons_stats_3pt %>% 
+  filter(Year >= 2004) %>% 
+  group_by(Player) %>% 
+  summarize(
+    three_pt_made = sum(three_pt_made),
+    three_pt_att = sum(three_pt_att)
+  ) %>% 
+  mutate(three_pt_perc = three_pt_made / three_pt_att)
+```
+
+Before fitting our prior distribution, I want to filter out players who don't have very many three point attempts. Players who don't shoot many threes are generally poor shooters and would skew our prior distribution. If we were trying to estimate the three point shooting performance of an average NBA shooter, we may want to include those bad shooters who don't take many threes in our prior distribution. But because we know Jokic is going to be taking (and making) threes at a decent clip, we might as well filter out the players that we know aren't relevant before continuing with the analysis. There are ways we can explicitly incorporate attempts into the Bayesian analysis, but for now let's keep things simple.
+
+To determine what the cutoff for attempts is, let's plot a distribution of attempts for all players in our data set.
+
+```{r, fig.width = 10, message = FALSE}
+prior_df %>% 
+  mutate(three_pt_att = pmin(three_pt_att, 500)) %>%
+ggplot(., aes(x = three_pt_att)) +
+  geom_histogram() +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  labs(
+    x = "Attempts in Career (Capped at 500)",
+    y = "Number of Players"
+  ) +
+  ggtitle("Distribution of Number of 3PT Attempts in Player's Career")
+```
+
+Let's drop players with fewer than 200 attempts, which will get rid of a little over 60% of our players.
+
+```{r}
+prior_df %>% 
+  count(three_pt_att >= 200) %>% 
+  mutate(
+    dist = scales::percent(n/sum(n))
+  )
+```
+
+```{r}
+prior_df %<>% filter(three_pt_att >= 200)
+```
+
+Next, let's look at the distribution of three point shooting percentages for all players with more than 200 three point shot attempts.
+
+```{r, message = FALSE, fig.width = 10}
+ggplot(prior_df, aes(x = three_pt_perc)) +
+  geom_histogram() + 
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  scale_x_continuous(labels = scale_perc) +
+  labs(
+    x = "Three Point Shooting Percentage",
+    y = "Number of Players (Min 200 Attempts)"
+  ) +
+  ggtitle("Distribution of Career 3PT%")
+```
+
+We'll now fit a Beta distribution to these shooting percentages to establish our prior distribution.
+
+```{r}
+library(stats4) 
+
+# log-likelihood function
+ll <- function(alpha, beta) {
+  x <- prior_df$three_pt_made
+  total <- prior_df$three_pt_att
+  -sum(VGAM::dbetabinom.ab(x, total, alpha, beta, log = TRUE))
+}
+
+# maximum likelihood estimation
+m <- mle(ll, start = list(alpha = 1, beta = 10), method = "L-BFGS-B", lower = c(0.0001, .1))
+ab <- coef(m) 
+alpha0 <- ab[1]
+beta0 <- ab[2]
+```
+
+This produces an alpha0 of `r round(as.numeric(alpha0), 3)` and a Beta0 of `r round(as.numeric(beta0), 3)`. Let's overlay this distribution onto our above histogram.
+
+```{r, message = FALSE, fig.width = 10}
+ggplot(prior_df) +
+  geom_histogram(aes(x = three_pt_perc, y = ..density..)) + 
+  stat_function(fun = function(x) dbeta(x, alpha0, beta0), color = "red", size = 1) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  scale_x_continuous(labels = scale_perc) +
+  labs(
+    x = "Three Point Shooting Percentage",
+    y = "Number of Players (Min 200 Attempts)"
+  ) +
+  ggtitle("Distribution of Career 3PT%")
+```
+
+This seems to fit the data reasonably well. We could probably do better by introducing a more restrictive filter on the number of attempts to eliminate some of the tail on the left of the distribution, but this is an acceptable starting point.
+
+### Append Bayesian Estimates to Data
+
+Now that we have our prior Beta distribution, we can use it to calculate estimates of players' real three point shooting percentages. These estimates are calculated as: (3PM + Alpha0) / (3PA + Alpha0 + Beta0), where Alpha0 and Beta0 come from our prior distribution. Players with many three point attempts and observed accuracies far outside the norm will see the largest discprepancy between their observed accuracy and their Bayesian estimated accuracy. 
+
+```{r}
+career_estimates = seasons_stats_3pt %>% 
+  filter(Year >= 2004) %>% 
+  group_by(Player) %>% 
+  summarize(
+    three_pt_made = sum(three_pt_made),
+    three_pt_att = sum(three_pt_att)
+  ) %>% 
+  mutate(three_pt_perc = three_pt_made / three_pt_att) %>% 
+  mutate(
+    eb_estimate = (three_pt_made + alpha0) / (three_pt_att + alpha0 + beta0)
+  )
+```
+
+Before moving onto analyzing our estimate of Jokic's three point shooting, let's take a look at the model's top 10 three point shooters of all time:
+
+```{r}
+career_estimates %>% arrange(desc(eb_estimate)) %>% head(10)
+```
+
+Notice how our Bayesian estimate elevates players like Steph and Korver who have taken thousands more three point shots than players like Fred Hoiberg who have higher observed averages. This is the Bayesian methodology in action! Hoiberg's 46% three point percentage is extraordinary, but it comes on limited attempts. The Bayesian methodology takes this into consideration, tempering his estimate down from his observed value of 46% to 41%.
+
+Next, let's bring in three point shooting from the most recent season from another data source (manually copied from the Basketball Reference page) so we can properly analyze Jokic.
+
+```{r}
+bbref_2017_2018 = read_csv(file.path(location_of_input_data, "bbref_player_stats_2017_2018.csv"))
+names(bbref_2017_2018) = gsub("%", "_perc", names(bbref_2017_2018))
+names(bbref_2017_2018) = gsub("/", "_per_", names(bbref_2017_2018))
+names(bbref_2017_2018)[names(bbref_2017_2018) == "3P"] = "three_pt_made"
+names(bbref_2017_2018)[names(bbref_2017_2018) == "3PA"] = "three_pt_att"
+names(bbref_2017_2018)[names(bbref_2017_2018) == "3P_perc"] = "three_pt_perc"
+bbref_2017_2018 %<>%
+  mutate(Year = 2018) %>% 
+  filter(Tm != "TOT") %>% 
+  group_by(Player, Year) %>% 
+  summarize(
+    three_pt_made = sum(three_pt_made),
+    three_pt_att = sum(three_pt_att)
+  ) %>% 
+  mutate(three_pt_perc = three_pt_made / three_pt_att)
+season_three_pt_shooting = seasons_stats_3pt %>% 
+  filter(Year >= 2004) %>% 
+  select(-three_pt_perc) %>% 
+  rbind(., bbref_2017_2018 %>% select(-three_pt_perc)) %>% 
+  ungroup()
+season_three_pt_shooting %>% head()
+```
+
+We can now look at Jokic's three point performance by year and the corresponding cumulative Bayesian estimate of his three point percentage:
+
+```{r}
+jokic = season_three_pt_shooting %>% 
+  filter(Player == "Nikola Jokic") %>% 
+  select(Player, Year, three_pt_made, three_pt_att) %>% 
+  mutate(
+    three_pt_perc = round(three_pt_made / three_pt_att, 3),
+    three_pt_made_cum = cumsum(three_pt_made),
+    three_pt_att_cum = cumsum(three_pt_att),
+    eb_estimate_cum = (three_pt_made_cum + alpha0) / (three_pt_att_cum + alpha0 + beta0)
+  )
+jokic
+```
+
+This approach should inspire some caution in Nuggets fans, as it suggests Jokic is likely closer to a 36% three point shooter than the knockdown 40% shooter he was last year. This analysis doesn't factor in career progression, though, which may bump up the estimate a bit. We'll touch on this idea of career progression later. The following chart visualizes how out-of-pattern his jump in performance was last year and how the Bayesian estimate is cautiously reacting to it.
+
+```{r, fig.width = 10, message = FALSE}
+jokic %>% 
+  select(Year, three_pt_perc, eb_estimate_cum) %>% 
+  gather(key, percentage, -Year) %>% 
+  mutate(
+    Year = factor(Year),
+    key = factor(key, levels = c("three_pt_perc", "eb_estimate_cum"), labels = c("Actual Season %", "Cumulative Bayesian %"))
+  ) %>% 
+  ggplot(., aes(x = Year, y = percentage, group = key, color = key)) +
+  geom_line() +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  scale_y_continuous(labels = scale_perc) + 
+  ylab("3PT%") +
+  scale_color_fivethirtyeight("3PT% Type") +
+  ggtitle("Nikola Jokic 3PT% Over Time")
+```
+
+Out of curiosity, let's look at a few more players...
+
+Let's take a look at Karl-Anthony Towns's three point shooting as well:
+
+```{r}
+towns = season_three_pt_shooting %>% 
+  filter(Player == "Karl-Anthony Towns") %>% 
+  select(Player, Year, three_pt_made, three_pt_att) %>% 
+  mutate(
+    three_pt_perc = round(three_pt_made / three_pt_att, 3),
+    three_pt_made_cum = cumsum(three_pt_made),
+    three_pt_att_cum = cumsum(three_pt_att),
+    eb_estimate_cum = (three_pt_made_cum + alpha0) / (three_pt_att_cum + alpha0 + beta0)
+  )
+towns
+```
+
+Jamal Murray:
+
+```{r}
+murray = season_three_pt_shooting %>% 
+  filter(Player == "Jamal Murray") %>% 
+  select(Player, Year, three_pt_made, three_pt_att) %>% 
+  mutate(
+    three_pt_perc = round(three_pt_made / three_pt_att, 3),
+    three_pt_made_cum = cumsum(three_pt_made),
+    three_pt_att_cum = cumsum(three_pt_att),
+    eb_estimate_cum = (three_pt_made_cum + alpha0) / (three_pt_att_cum + alpha0 + beta0)
+  )
+murray
+```
+
+Gary Harris:
+
+```{r}
+harris = season_three_pt_shooting %>% 
+  filter(Player == "Gary Harris") %>% 
+  select(Player, Year, three_pt_made, three_pt_att) %>% 
+  mutate(
+    three_pt_perc = round(three_pt_made / three_pt_att, 3),
+    three_pt_made_cum = cumsum(three_pt_made),
+    three_pt_att_cum = cumsum(three_pt_att),
+    eb_estimate_cum = (three_pt_made_cum + alpha0) / (three_pt_att_cum + alpha0 + beta0)
+  )
+harris
+```
+
+Steph Curry:
+
+```{r}
+curry = season_three_pt_shooting %>% 
+  filter(Player == "Stephen Curry") %>% 
+  select(Player, Year, three_pt_made, three_pt_att) %>% 
+  mutate(
+    three_pt_perc = round(three_pt_made / three_pt_att, 3),
+    three_pt_made_cum = cumsum(three_pt_made),
+    three_pt_att_cum = cumsum(three_pt_att),
+    eb_estimate_cum = (three_pt_made_cum + alpha0) / (three_pt_att_cum + alpha0 + beta0)
+  )
+curry
+```
+
+This Bayesian approach "shrinks" the estimate of Jokic's three point shooting towards the population mean. The amount of shrinkage is determined by both the amount of evidence (i.e., the number of threes attempted) and the strength of the evidence (i.e., how different his three point shooting percentage is compared to the average). A point estimate is helpful, but it won't help us answer the question of how likely it is that he'll shoot 40% or greater again this year. To answer that question, we'll have to calculate his posterior distribution by modifying our alpha and beta parameters.
+
+```{r, fig.width = 10}
+jokic %>% 
+  mutate(
+    a1 = alpha0 + three_pt_made,
+    b1 = beta0 + three_pt_att - three_pt_made
+  ) %>% 
+  select(Year, a1, b1) %>% 
+  crossing(x = seq(0.30, 0.45, 0.002)) %>% 
+  ungroup() %>% 
+  mutate(
+    density = dbeta(x, a1, b1),
+    Year = factor(Year)
+  ) %>% 
+  ggplot(., aes(x, density, color = Year)) +
+  geom_line() +
+  stat_function(fun = function(x) dbeta(x, alpha0, beta0),
+                lty = 2, color = "black") +
+  theme_fivethirtyeight() + 
+  scale_color_fivethirtyeight() + 
+  scale_x_continuous(labels = scale_perc) + 
+  theme(axis.title = element_text()) +
+  labs(
+    x = "Three Point Shooting %",
+    y = "Density"
+  ) +
+  ggtitle("Bayesian Estimates of Jokic's 3pt. % by Year")
+```
+
+Jokic's distribution for 2016 and 2017 are quite wide and similar to the prior distribution (shown as the dashed black line). When we add in the 2018 season, however, we get a material shift in the distribution. Not only does the expected value shift to the right (to the 36% estimate we calculated earlier), but the distribution narrows as well. This is because we've collected more data on his performance and thus have more confidence in our understanding of his distribution.
+
+```{r}
+jokic %>% 
+  mutate(
+    a1 = alpha0 + three_pt_made,
+    b1 = beta0 + three_pt_att - three_pt_made
+  ) %>% 
+  filter(Year == 2018) %>% 
+  select(a1, b1) %>% 
+  crossing(x = seq(0.30, 0.45, 0.002)) %>% 
+  ungroup() %>% 
+  mutate(
+    density = dbeta(x, a1, b1),
+    dist = pbeta(x, a1, b1)
+  ) %>% 
+  filter(x == 0.4) %>% 
+  select(dist) %>% 
+  .[[1]] -> jokic_pr_lt.4
+```
+
+Using this distribution, we can calculate the probability that he's truly a 40+% three point shooter to be `r scales::percent(1 - jokic_pr_lt.4)`. So if you're a Nuggets optimist (do those exist?), you can hold tight to that 11%! In the next section, we'll take a slightly different view of Jokic's unusual jump in performance in his third year. By analyzing his performance in a couple different ways we can get a better sense of the uncertainty in our estimate of his performance. 
+
+## Analysis of Similar Jumps in Performance
+
+Jokic went from a 32-33% shooter in his first two years to a nearly 40% shooter in his third year. What other players had similar jumps (let's say > 6% improvements in a single year with at least 100 attempts in both years), and how did they perform in the following year? This will help us understand if there's precedent for such an improvement to stick or if it's more likely that a regression year is in order.
+
+```{r}
+perf_chng = season_three_pt_shooting %>% 
+  mutate(
+    three_pt_perc = round(three_pt_made / three_pt_att, 3),
+    three_pt_made_cum = cumsum(three_pt_made),
+    three_pt_att_cum = cumsum(three_pt_att),
+    eb_estimate_cum = (three_pt_made_cum + alpha0) / (three_pt_att_cum + alpha0 + beta0)
+  ) %>% 
+  group_by(Player) %>% 
+  mutate(
+    lag_three_pt_att = lag(three_pt_att),
+    lead_three_pt_att = lead(three_pt_att),
+    lag_three_pt_perc = lag(three_pt_perc),
+    lead_three_pt_perc = lead(three_pt_perc),
+    perc_change_lag = three_pt_perc - lag_three_pt_perc,
+    perc_change_lead = lead_three_pt_perc - three_pt_perc
+  )
+
+perf_jumps = perf_chng %>% 
+  filter(
+    lag_three_pt_att > 100,
+    three_pt_att > 100,
+    lead_three_pt_att > 100,
+    perc_change_lag > 0.06
+  ) %>% 
+  arrange(desc(three_pt_att)) %>% 
+  select(
+    Player, Year, perc_change_lag, perc_change_lead,
+    lag_three_pt_att, three_pt_att, lead_three_pt_att, 
+    lag_three_pt_perc, three_pt_perc, lead_three_pt_perc
+  ) %>% ungroup()
+perf_jumps
+```
+
+We have over 130 such examples, which is a pretty impressive amount of data. Let's plot the results to get a better sense of the results:
+
+```{r, fig.width = 10, message = FALSE}
+ggplot(perf_jumps, aes(x = perc_change_lag, y = perc_change_lead)) +
+  geom_point() +
+  # geom_abline(intercept= 0.06, slope = -1) +
+  # geom_smooth() +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  scale_y_continuous(labels = scale_perc) +
+  scale_x_continuous(labels = scale_perc) +
+  labs(
+    x = "3PT% Increase",
+    y = "Following Year's 3PT% Change"
+  ) +
+  ggtitle("Do Players With Large Jumps in 3PT% Regress in the Following Year?")
+```
+
+The majority of these players regressed in the following season (most of the dots are below the horizontal line at 0%), and players with larger jumps in performance tended to have larger regressions. We can fit a simple linear model to this data and plot the result to help us estimate how much of a regression can be expected given the amount of a player's one-year 3PT% increase.
+
+```{r}
+lm = lm(formula = "perc_change_lead ~ perc_change_lag", data = perf_jumps)
+summary(lm)
+```
+
+The dashed reference line below plots y = -x. This would imply that a player would completely regress to his previous season's performance after his breakout shooting season. Our linear model is plotted as the solid black line, and the fact that it has a flatter slope implies that, while some regression is expected, a player usually shoots better following his breakout season than he did prior to the breakout. 
+
+```{r, fig.width = 10}
+perf_jumps %>% 
+  mutate(lm_pred = predict(lm)) %>% 
+ggplot(.) +
+  geom_point(aes(x = perc_change_lag, y = perc_change_lead)) +
+  geom_abline(intercept= 0.06, slope = -1, linetype = 2) +
+  geom_line(aes(x = perc_change_lag, y = lm_pred)) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  scale_y_continuous(labels = scale_perc) +
+  scale_x_continuous(labels = scale_perc) +
+  labs(
+    x = "3PT% Increase",
+    y = "Following Year's 3PT% Change"
+  ) +
+  ggtitle("Do Players With Large Jumps in 3PT% Regress in the Following Year?")
+```
+
+In short, players with jumps in performance tend to regress, though not all the way to their prior season's values. In this data set, the median change during the season of improved shooting was `r scales::percent(median_chng_lag)`. In the following season, the median change was `r scales::percent(median_chng_lead)`. So we might expect Jokic's three point shooting next season to drop about 3.5 percentage points from 39.6% to 36.1%. However, Jokic's surge was a little less significant than some of the other players in this data set, and as we saw above the higher the surge in performance the greater the regression in the following season. By using the linear model we fit above to predict Jokic's performance this upcoming season, we get a predicted three point percentage of 36.7%:
+
+```{r, message = FALSE}
+perf_chng %>% 
+  filter(
+    perc_change_lag > 0.06,
+    Player == "Nikola Jokic"
+  ) %>% 
+  mutate(lm_pred = predict(lm, newdata = .)) %>% 
+  select(lag_three_pt_perc, three_pt_perc, lm_pred) %>% 
+  mutate(lead_three_pt_perc_pred = three_pt_perc + lm_pred)
+```
+
+These two estimates (36.1% and 36.7%) are remarkably similar to our Bayesian estimate above of 36.1%. My big takeaway from these two analyses is that it's *highly* unlikely that Jokic will continue to shoot at a near 40% rate from the three point line this season.
+
+Let's take a closer look at the players who *didn't* regress in their subsequent season. If we are to have any hope that Jokic truly is a 40% three point shooter, we'd hope to see some similarities in characteristics between these players and Jokic. Specifically, I'm looking for whether the players who had a jump in performance and didn't regress in the following year were disproportionately younger. Young players tend to improve over time, so it seems logical that they'd be more likely to retain their elevated performance in three point shooting than players who had similar jumps in performance later in their careers. 
+
+The following plot shows the distribution of players by their number of years in the league during their breakout season broken out by whether they maintained their performance in the following season (a one percent regression is performance is allowed to be classified as "maintaining performance").
+
+```{r, fig.width = 10, message = FALSE}
+perf_jumps_persist = perf_jumps %>% 
+  filter(perc_change_lead >= -0.01) %>% 
+  arrange(desc(perc_change_lead))
+perf_jumps_persist %<>% 
+  left_join(
+    season_three_pt_shooting %>% 
+      filter(Player %in% perf_jumps_persist$Player) %>% 
+      group_by(Player) %>% 
+      arrange(Player, Year) %>% 
+      mutate(year_in_league = 1:n()) %>% 
+      select(Player, Year, year_in_league)
+  )
+
+perf_jumps_nopersist = perf_jumps %>% 
+  filter(perc_change_lead < 0.01)
+perf_jumps_nopersist %<>% 
+  left_join(
+    season_three_pt_shooting %>% 
+      filter(Player %in% perf_jumps_nopersist$Player) %>% 
+      group_by(Player) %>% 
+      arrange(Player, Year) %>% 
+      mutate(year_in_league = 1:n()) %>% 
+      select(Player, Year, year_in_league)
+  )
+
+perf_jumps_persist %>% 
+  select(Player, year_in_league) %>% 
+  mutate(persist = "Yes") %>% 
+  rbind(
+    perf_jumps_nopersist %>% 
+      select(Player, year_in_league) %>% 
+      mutate(persist = "No")
+  ) %>% 
+  count(persist, year_in_league) %>% 
+  group_by(persist) %>% 
+  mutate(dist = n / sum(n)) %>% 
+  ggplot(., aes(x = year_in_league, y = dist, fill = persist)) +
+  geom_col(position = "dodge") +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  scale_fill_fivethirtyeight() +
+  scale_y_continuous(labels = scale_perc) + 
+  labs(
+    x = "Year in League",
+    y = "Distribution",
+    fill = "Did Player Maintain Performance? (< 1% regression)"
+  ) +
+  ggtitle(
+    "Age of Players With Jumps in 3PT%",
+    subtitle = "Are players who maintain performance after their breakout season disproportionately younger?"
+  )
+```
+
+The results are a little surprising to me. The distributions seem to be remarkably similar. Even though there's a great deal of density on the left side of the graph, which implies that younger players are more likely to have breakout seasons, the distributions are similar across the two groups. This means that young players are about as likely to regress following their breakout three point shooting season as their older counterparts, which is disheartening news for Nuggets fans. I was holding out hope that an investigation into career progression expectations would give us all reason to be more optimistic in Jokic's three point shooting than the prior analyses would suggest, but the numbers here aren't encouraging. Down the road, I'd like to extend the Bayesian model to include a hierarchical component that explicitly incorporates a player's age, but that's a topic for another time... For now, it seems like the best estimate of Jokic's true three point shooting percentage is somewhere in the 36-37% range. Let's hope he surprises us yet again! :)
+
+
