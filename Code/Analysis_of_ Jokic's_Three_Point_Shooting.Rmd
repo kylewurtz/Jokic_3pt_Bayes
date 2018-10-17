@@ -307,8 +307,15 @@ career_estimates = seasons_stats_3pt %>%
 
 Before moving onto analyzing our estimate of Jokic's three point shooting, let's take a look at the model's top 10 three point shooters of all time:
 
-```{r}
-career_estimates %>% arrange(desc(eb_estimate)) %>% head(10)
+```{r, results = 'asis'}
+career_estimates %>% 
+  arrange(desc(eb_estimate)) %>% 
+  head(10) %>% 
+  mutate(
+    three_pt_perc = scales::percent(three_pt_perc),
+    eb_estimate = scales::percent(eb_estimate)
+  ) %>% 
+  kable()
 ```
 
 Notice how our Bayesian estimate elevates players like Steph and Korver who have taken thousands more three point shots than players like Fred Hoiberg who have higher observed averages. This is the Bayesian methodology in action! Hoiberg's 46% three point percentage is extraordinary, but it comes on limited attempts. The Bayesian methodology takes this into consideration, tempering his estimate down from his observed value of 46% to 41%.
@@ -341,7 +348,7 @@ season_three_pt_shooting %>% head()
 
 We can now look at Jokic's three point performance by year and the corresponding cumulative Bayesian estimate of his three point percentage:
 
-```{r}
+```{r, results = 'asis'}
 jokic = season_three_pt_shooting %>% 
   filter(Player == "Nikola Jokic") %>% 
   select(Player, Year, three_pt_made, three_pt_att) %>% 
@@ -351,7 +358,13 @@ jokic = season_three_pt_shooting %>%
     three_pt_att_cum = cumsum(three_pt_att),
     eb_estimate_cum = (three_pt_made_cum + alpha0) / (three_pt_att_cum + alpha0 + beta0)
   )
-jokic
+jokic %>% 
+  mutate(
+    three_pt_perc = scales::percent(three_pt_perc),
+    eb_estimate_cum = scales::percent(eb_estimate_cum)
+  ) %>% 
+  select(Player, Year, three_pt_att, three_pt_perc, eb_estimate_cum) %>% 
+  kable()
 ```
 
 This approach should inspire some caution in Nuggets fans, as it suggests Jokic is likely closer to a 36% three point shooter than the knockdown 40% shooter he was last year. This analysis doesn't factor in career progression, though, which may bump up the estimate a bit. We'll touch on this idea of career progression later. The following chart visualizes how out-of-pattern his jump in performance was last year and how the Bayesian estimate is cautiously reacting to it.
@@ -574,7 +587,7 @@ ggplot(.) +
 
 In short, players with jumps in performance tend to regress, though not all the way to their prior season's values. In this data set, the median change during the season of improved shooting was `r scales::percent(median_chng_lag)`. In the following season, the median change was `r scales::percent(median_chng_lead)`. So we might expect Jokic's three point shooting next season to drop about 3.5 percentage points from 39.6% to 36.1%. However, Jokic's surge was a little less significant than some of the other players in this data set, and as we saw above the higher the surge in performance the greater the regression in the following season. By using the linear model we fit above to predict Jokic's performance this upcoming season, we get a predicted three point percentage of 36.7%:
 
-```{r, message = FALSE}
+```{r, message = FALSE, results='asis'}
 perf_chng %>% 
   filter(
     perc_change_lag > 0.06,
@@ -582,7 +595,8 @@ perf_chng %>%
   ) %>% 
   mutate(lm_pred = predict(lm, newdata = .)) %>% 
   select(lag_three_pt_perc, three_pt_perc, lm_pred) %>% 
-  mutate(lead_three_pt_perc_pred = three_pt_perc + lm_pred)
+  mutate(lead_three_pt_perc_pred = three_pt_perc + lm_pred) %>% 
+  kable()
 ```
 
 These two estimates (36.1% and 36.7%) are remarkably similar to our Bayesian estimate above of 36.1%. My big takeaway from these two analyses is that it's *highly* unlikely that Jokic will continue to shoot at a near 40% rate from the three point line this season.
